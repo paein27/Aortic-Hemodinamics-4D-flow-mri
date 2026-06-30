@@ -1,0 +1,15 @@
+# Ignorar todo por defecto
+*
+
+# Permitir que Git revise carpetas
+!*/
+
+# Mantener el propio .gitignore
+!.gitignore
+
+# Incluir todos los archivos MATLAB
+!*.m
+
+# Incluir toda la carpeta 4D-Flow
+!4D-Flow-Matlab-Toolbox-main/
+!4D-Flow-Matlab-Toolbox-main/**
