@@ -3,9 +3,9 @@ close all
 clear
 
 %% Carga de datos procesados
-normal_rest_data_folder = 'C:\Users\ignac\OneDrive\Desktop\USM\Memoria\Data\Datos_Procesados\Normal rest';
+normal_rest_data_folder = 'C:\Users\ignac\OneDrive\Desktop\USM\Memoria\Data\Datos_Procesados\13 mm rest\MATLAB FILES';
 
-addpath(fullfile(normal_rest_data_folder, 'iso2mesh'))
+addpath(fullfile('C:\Users\ignac\OneDrive\Desktop\USM\Memoria\4D-Flow-Matlab-Toolbox-main\iso2mesh'))
 
 load(fullfile(normal_rest_data_folder, 'FE Mesh', 'elem.mat'))
 load(fullfile(normal_rest_data_folder, 'FE Mesh', 'nodes.mat'))
@@ -15,12 +15,21 @@ load(fullfile(normal_rest_data_folder, 'FE Velocity', 'VEL.mat'))
 load(fullfile(normal_rest_data_folder, 'FE Centerline', 'Centerline.mat'))
 load(fullfile(normal_rest_data_folder, 'FE Area', 'Area.mat'))
 
+[coordinate_scale_to_mm, detected_coordinate_units] = ...
+    detect_coordinate_scale_to_mm(nodes, Centerline);
+nodes = nodes * coordinate_scale_to_mm;
+Centerline = Centerline * coordinate_scale_to_mm;
+
+fprintf('Unidad de coordenadas detectada: %s\n', detected_coordinate_units)
+
 surface_node_ids = unique(faces(:));
 
 time_file = fullfile(normal_rest_data_folder, '2D Flow', 'Time.mat');
 
 %% Configuracion general
 number_of_aortic_sections = 30;
+section_I_urbina = 3;
+section_IV_urbina = 30;
 number_of_time_phases = size(VEL, 3);
 
 [time_vector_seconds, time_vector_source] = get_time_vector_for_pwv(time_file, number_of_time_phases);
@@ -92,9 +101,6 @@ fprintf('Numero de cortes: %d\n', number_of_aortic_sections)
 fprintf('Longitud de la centerline: %.1f mm\n', centerline_total_length_mm)
 fprintf('Separacion entre cortes: %.1f mm\n', ...
     mean(diff(section_arc_positions_mm)))
-fprintf('Area transversal usada para flujo: Area.mat cuando disponible.\n')
-fprintf(['Area geometrica directa de qmeshcut se conserva solo ', ...
-    'como comparacion.\n'])
 
 %----------------------- Niveles de Laplace asociados a cada corte -----------------------%
 
@@ -452,11 +458,11 @@ grid on
 
 %   TTP  = Time To Peak, usa el tiempo del maximo de flujo.
 %   TTF  = Time To Foot, estima el pie de onda desde la pendiente inicial.
-%   XCor = Cross-correlation, mide retrasos respecto al primer corte.
+%   XCor = Cross-correlation global tipo Markl.
 %
 % La distancia usada en el ajuste lineal es la posicion acumulada sobre la
-% centerline, en metros. PWV se calcula como 1/pendiente del ajuste tiempo vs
-% distancia.
+% centerline, en metros. PWV se calcula como 1/pendiente del ajuste tiempo
+% vs distancia.
 
 [PWV_TTP_mps, TTP_s, fit_TTP, R2_TTP] = estimate_pwv_ttp( ...
     section_arc_positions_m(:), time_vector_seconds, flow_rate_mL_per_s);
@@ -464,13 +470,14 @@ grid on
 [PWV_TTF_mps, TTF_s, fit_TTF, R2_TTF] = estimate_pwv_ttf( ...
     section_arc_positions_m(:), time_vector_seconds, flow_rate_mL_per_s);
 
-reference_section_for_xcor = 1;
+xcor_reference_section_index = section_I_urbina;
+
 [PWV_XCor_mps, Delay_XCor_s, fit_XCor, R2_XCor] = ...
     estimate_pwv_xcor( ...
         section_arc_positions_m(:), ...
         time_vector_seconds, ...
         flow_rate_mL_per_s, ...
-        reference_section_for_xcor);
+        xcor_reference_section_index);
 
 valid_ttp_section_count = nnz(isfinite(TTP_s));
 valid_ttf_section_count = nnz(isfinite(TTF_s));
@@ -485,13 +492,17 @@ PWVSummary = table( ...
         valid_ttf_section_count; ...
         valid_xcor_section_count], ...
     repmat(number_of_aortic_sections, 3, 1), ...
+    ["TTP all sections"; ...
+        "TTF baseline-corrected all sections"; ...
+        "XCor: all sections vs reference section"], ...
     'VariableNames', { ...
         'Method', ...
         'PWV_mps', ...
         'Slope_s_per_m', ...
         'R2', ...
         'ValidPlanes', ...
-        'TotalPlanes'});
+        'TotalPlanes', ...
+        'Notes'});
 
 PWVPlaneSummary = table( ...
     (1:number_of_aortic_sections)', ...
@@ -499,7 +510,7 @@ PWVPlaneSummary = table( ...
     TTP_s(:), ...
     TTF_s(:), ...
     Delay_XCor_s(:), ...
-    'VariableNames', {'Plane', 's_m', 'TTP_s', 'TTF_s', 'XCorDelay_s'});
+    'VariableNames', {'Plane', 's_m', 'TTP_s', 'TTF_s', 'XCor'});
 
 fprintf('\n============================================================\n')
 fprintf('RESULTADOS NORMAL REST\n')
@@ -509,7 +520,11 @@ fprintf('Tiempo inicial: %.6f s\n', time_vector_seconds(1))
 fprintf('Tiempo final: %.6f s\n', time_vector_seconds(end))
 fprintf('dt medio: %.6f s\n', mean(diff(time_vector_seconds)))
 fprintf('\nNumero de cortes: %d\n', number_of_aortic_sections)
-fprintf('Plano de referencia XCor: %d\n', reference_section_for_xcor)
+fprintf('XCor %d\n', ...
+    xcor_reference_section_index)
+fprintf(['PWV XCor global = %.4f m/s | slope = %.6f s/m | ', ...
+    'R2 = %.4f | planos validos = %d\n'], ...
+    PWV_XCor_mps, fit_XCor(1), R2_XCor, valid_xcor_section_count)
 fprintf('Separacion media: %.1f mm\n', mean(diff(section_arc_positions_mm)))
 fprintf('Fase visualizada: %d\n', visualization_phase_index)
 fprintf('\nResumen de PWV:\n')
@@ -523,9 +538,34 @@ plot_pwv_fit( ...
 plot_pwv_fit( ...
     section_arc_positions_m, TTF_s, fit_TTF, PWV_TTF_mps, R2_TTF, ...
     'PWV por TTF', 'TTF [s]');
-plot_pwv_fit( ...
-    section_arc_positions_m, Delay_XCor_s, fit_XCor, PWV_XCor_mps, ...
-    R2_XCor, 'PWV por XCor', 'Delay relativo [s]');
+
+relative_distance_xcor_m = ...
+    section_arc_positions_m(:) - ...
+    section_arc_positions_m(xcor_reference_section_index);
+valid_xcor_plot_mask = ...
+    isfinite(relative_distance_xcor_m) & isfinite(Delay_XCor_s);
+x_fit = linspace( ...
+    min(relative_distance_xcor_m(valid_xcor_plot_mask)), ...
+    max(relative_distance_xcor_m(valid_xcor_plot_mask)), ...
+    200);
+y_fit = polyval(fit_XCor, x_fit);
+
+figure('Name', 'PWV por XCor')
+plot( ...
+    relative_distance_xcor_m(valid_xcor_plot_mask), ...
+    Delay_XCor_s(valid_xcor_plot_mask), ...
+    'o', 'MarkerSize', 7, 'LineWidth', 1.5)
+hold on
+plot(x_fit, y_fit, '-', 'LineWidth', 1.8)
+
+xlabel('Distancia sobre centerline [m]')
+ylabel('Delay relativo [s]')
+title(sprintf( ...
+    'PWV por XCor global = %.3f m/s | R2 = %.3f', ...
+    PWV_XCor_mps, R2_XCor))
+legend({'Delay por corte', 'Ajuste lineal'}, 'Location', 'best')
+grid on
+hold off
 
 %% Funciones auxiliares
 % Las funciones locales mantienen aislados los calculos repetitivos:
@@ -571,6 +611,26 @@ function face_mean_value = calculate_face_mean_vertex_values( ...
     triangular_face_mask = face_node_indices(:,3) == face_node_indices(:,4);
     face_mean_value(triangular_face_mask) = ...
         mean(values_per_face(triangular_face_mask,1:3), 2);
+end
+
+
+function [coordinate_scale_to_mm, detected_coordinate_units] = ...
+    detect_coordinate_scale_to_mm(nodes, Centerline)
+
+    spatial_bounds = [
+        min(nodes, [], 1);
+        max(nodes, [], 1);
+        min(Centerline, [], 1);
+        max(Centerline, [], 1)];
+    spatial_extent = max(max(spatial_bounds) - min(spatial_bounds));
+
+    if spatial_extent < 1
+        coordinate_scale_to_mm = 1000;
+        detected_coordinate_units = 'm';
+    else
+        coordinate_scale_to_mm = 1;
+        detected_coordinate_units = 'mm';
+    end
 end
 
 
@@ -703,22 +763,28 @@ function [PWV_mps, TTF_s, fit_coefficients, R2] = estimate_pwv_ttf( ...
 
         section_flow_curve_mL_per_s = fillmissing( ...
             section_flow_curve_mL_per_s, 'linear', 'EndValues', 'nearest');
-        [peak_flow_mL_per_s, peak_sample_index] = ...
-            max(section_flow_curve_mL_per_s);
+        baseline_sample_count = min(3, numel(section_flow_curve_mL_per_s));
+        baseline_flow_mL_per_s = median( ...
+            section_flow_curve_mL_per_s(1:baseline_sample_count), ...
+            'omitnan');
+        flow_relative_mL_per_s = ...
+            section_flow_curve_mL_per_s - baseline_flow_mL_per_s;
+        [peak_relative_flow_mL_per_s, peak_sample_index] = ...
+            max(flow_relative_mL_per_s);
 
         if peak_sample_index < 3 || ...
-                ~isfinite(peak_flow_mL_per_s) || ...
-                peak_flow_mL_per_s <= 0
+                ~isfinite(peak_relative_flow_mL_per_s) || ...
+                peak_relative_flow_mL_per_s <= 0
             continue
         end
 
-        threshold_20_percent = 0.20*peak_flow_mL_per_s;
-        threshold_80_percent = 0.80*peak_flow_mL_per_s;
+        threshold_20_percent = 0.20 * peak_relative_flow_mL_per_s;
+        threshold_80_percent = 0.80 * peak_relative_flow_mL_per_s;
         threshold_20_index = find( ...
-            section_flow_curve_mL_per_s(1:peak_sample_index) >= ...
+            flow_relative_mL_per_s(1:peak_sample_index) >= ...
             threshold_20_percent, 1, 'first');
         threshold_80_index = find( ...
-            section_flow_curve_mL_per_s(1:peak_sample_index) >= ...
+            flow_relative_mL_per_s(1:peak_sample_index) >= ...
             threshold_80_percent, 1, 'first');
 
         if isempty(threshold_20_index) || ...
@@ -737,7 +803,7 @@ function [PWV_mps, TTF_s, fit_coefficients, R2] = estimate_pwv_ttf( ...
 
         upslope_fit_coefficients = polyfit( ...
             time_vector_seconds(upslope_sample_indices), ...
-            section_flow_curve_mL_per_s(upslope_sample_indices), ...
+            flow_relative_mL_per_s(upslope_sample_indices), ...
             1);
 
         if ~isfinite(upslope_fit_coefficients(1)) || ...
@@ -875,6 +941,125 @@ function [PWV_mps, Delay_s, fit_coefficients, R2] = estimate_pwv_xcor( ...
 
     [PWV_mps, fit_coefficients, R2] = fit_pwv_linear( ...
         relative_section_distance_m, Delay_s);
+end
+
+
+function [PWV_mps, Delay_s, fit_coefficients, R2, ...
+    pair_delay_s, pair_distance_m, maximum_correlation] = ...
+    estimate_pwv_xcor_urbina_pair( ...
+        section_distance_m, time_vector_seconds, flow_rate_mL_per_s, ...
+        section_I, section_IV)
+
+    number_of_sections = size(flow_rate_mL_per_s, 1);
+    Delay_s = nan(number_of_sections, 1);
+    fit_coefficients = [NaN NaN];
+    R2 = NaN;
+    PWV_mps = NaN;
+    pair_delay_s = NaN;
+    pair_distance_m = NaN;
+    maximum_correlation = NaN;
+
+    if section_I < 1 || section_I > number_of_sections || ...
+            section_IV < 1 || section_IV > number_of_sections
+        warning('Las secciones XCor I-IV estan fuera del rango de cortes.')
+        return
+    end
+
+    flow_I = flow_rate_mL_per_s(section_I,:)';
+    flow_IV = flow_rate_mL_per_s(section_IV,:)';
+
+    if all(~isfinite(flow_I)) || all(~isfinite(flow_IV))
+        warning('XCor I-IV no tiene curvas de flujo validas.')
+        return
+    end
+
+    flow_I = fillmissing(flow_I, 'linear', 'EndValues', 'nearest');
+    flow_IV = fillmissing(flow_IV, 'linear', 'EndValues', 'nearest');
+
+    flow_I = flow_I - mean(flow_I, 'omitnan');
+    flow_IV = flow_IV - mean(flow_IV, 'omitnan');
+
+    mean_time_step_seconds = mean(diff(time_vector_seconds));
+    maximum_lag_seconds = 0.30;
+    maximum_lag_samples = min( ...
+        floor(numel(time_vector_seconds)/2), ...
+        max(1, round(maximum_lag_seconds/mean_time_step_seconds)));
+    lag_sample_vector = (-maximum_lag_samples:maximum_lag_samples)';
+    correlation_by_lag = nan(numel(lag_sample_vector), 1);
+
+    for lag_index = 1:numel(lag_sample_vector)
+        current_lag_samples = lag_sample_vector(lag_index);
+
+        if current_lag_samples >= 0
+            reference_segment = flow_I(1:end-current_lag_samples);
+            section_segment = flow_IV(1+current_lag_samples:end);
+        else
+            reference_segment = flow_I(1-current_lag_samples:end);
+            section_segment = flow_IV(1:end+current_lag_samples);
+        end
+
+        valid_sample_mask = ...
+            isfinite(reference_segment) & isfinite(section_segment);
+
+        if nnz(valid_sample_mask) < 3
+            continue
+        end
+
+        reference_segment = reference_segment(valid_sample_mask);
+        section_segment = section_segment(valid_sample_mask);
+        correlation_denominator = sqrt( ...
+            sum(reference_segment.^2) * sum(section_segment.^2));
+
+        if correlation_denominator > 0
+            correlation_by_lag(lag_index) = ...
+                sum(reference_segment .* section_segment) / ...
+                correlation_denominator;
+        end
+    end
+
+    if all(~isfinite(correlation_by_lag))
+        warning('XCor I-IV no pudo calcular correlaciones validas.')
+        return
+    end
+
+    [maximum_correlation, maximum_correlation_index] = ...
+        max(correlation_by_lag);
+    refined_lag_samples = lag_sample_vector(maximum_correlation_index);
+
+    if maximum_correlation_index > 1 && ...
+            maximum_correlation_index < numel(correlation_by_lag)
+
+        left_correlation = correlation_by_lag(maximum_correlation_index-1);
+        center_correlation = correlation_by_lag(maximum_correlation_index);
+        right_correlation = correlation_by_lag(maximum_correlation_index+1);
+        parabola_denominator = ...
+            left_correlation - 2*center_correlation + right_correlation;
+
+        if isfinite(parabola_denominator) && ...
+                abs(parabola_denominator) > eps
+
+            lag_sample_offset = ...
+                0.5*(left_correlation - right_correlation) / ...
+                parabola_denominator;
+            lag_sample_offset = max(min(lag_sample_offset, 1), -1);
+            refined_lag_samples = refined_lag_samples + lag_sample_offset;
+        end
+    end
+
+    pair_delay_s = refined_lag_samples * mean_time_step_seconds;
+    pair_distance_m = ...
+        section_distance_m(section_IV) - section_distance_m(section_I);
+
+    if ~isfinite(pair_delay_s) || pair_delay_s <= 0 || ...
+            ~isfinite(pair_distance_m) || pair_distance_m <= 0
+        warning('XCor I-IV entrego delay o distancia invalida.')
+        return
+    end
+
+    PWV_mps = pair_distance_m / pair_delay_s;
+
+    Delay_s(section_I) = 0;
+    Delay_s(section_IV) = pair_delay_s;
 end
 
 
