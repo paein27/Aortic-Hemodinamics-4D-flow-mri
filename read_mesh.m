@@ -3,7 +3,9 @@ close all
 clear
 
 %% Carga de datos procesados
-normal_rest_data_folder = 'C:\Users\ignac\OneDrive\Desktop\USM\Memoria\Data\Datos_Procesados\13 mm rest\MATLAB FILES';
+normal_rest_data_folder = 'C:\Users\ignac\OneDrive\Desktop\USM\Memoria\Data\Datos_Procesados\9 mm rest\MATLAB FILES';
+dataset_label = erase(string(normal_rest_data_folder), "\MATLAB FILES");
+[~, dataset_label] = fileparts(dataset_label);
 
 addpath(fullfile('C:\Users\ignac\OneDrive\Desktop\USM\Memoria\4D-Flow-Matlab-Toolbox-main\iso2mesh'))
 
@@ -28,8 +30,21 @@ time_file = fullfile(normal_rest_data_folder, '2D Flow', 'Time.mat');
 
 %% Configuracion general
 number_of_aortic_sections = 30;
-section_I_urbina = 3;
-section_IV_urbina = 30;
+
+% Posiciones anatomicas I y IV (Urbina/Sotelo) ancladas por longitud de arco
+% FIJA desde la raiz de la centerline, no por indice de plano. Como es el
+% mismo modelo de aorta en los 4 phantoms, la distancia fisica I-IV es fija;
+% anclar por arco la mantiene consistente entre datasets. Antes I=3/IV=30
+% (indices) hacia que la distancia variara ~25% con la extension de la
+% segmentacion (centerline 196-246 mm), sesgando la PWV. Ambos ajustables:
+%   - I ~ AAo, ejemplo 35 mm sobre la raiz.
+%   - IV ~ DAo a nivel coronario; se deja <= la menor longitud de centerline
+%     de los datasets (~196 mm) para que el plano exista en todos.
+% Los indices section_I_urbina / section_IV_urbina se resuelven mas abajo,
+% una vez conocidas las posiciones de arco de los cortes.
+position_I_arc_from_root_mm = 35;
+position_IV_arc_from_root_mm = 185;
+
 number_of_time_phases = size(VEL, 3);
 
 [time_vector_seconds, time_vector_source] = get_time_vector_for_pwv(time_file, number_of_time_phases);
@@ -73,6 +88,20 @@ section_arc_positions_mm = ...
 section_arc_positions_mm = section_arc_positions_mm(2:end-1);
 section_arc_positions_m = section_arc_positions_mm / 1000;
 
+% Se eligen los planos I y IV como los cortes cuyo arco desde la raiz queda
+% mas cerca de las posiciones fijas configuradas. Asi I y IV caen en el mismo
+% lugar anatomico en todos los datasets (dentro de +/- media separacion) y la
+% distancia arc(IV)-arc(I) deja de depender de cuanto se segmento la aorta.
+% La distancia correcta es esa resta (la funcion del par ya la calcula); NO se
+% mueve el origen al inflow, porque el delay se obtiene correlacionando las
+% ondas de I y IV y la distancia debe empezar en I.
+[~, section_I_urbina] = ...
+    min(abs(section_arc_positions_mm - position_I_arc_from_root_mm));
+[~, section_IV_urbina] = ...
+    min(abs(section_arc_positions_mm - position_IV_arc_from_root_mm));
+
+urbina_section_arc_positions_m = section_arc_positions_m(:);
+
 section_centers_mm = interp1( ...
     centerline_arc_length_mm, ...
     centerline_points_mm, ...
@@ -101,6 +130,12 @@ fprintf('Numero de cortes: %d\n', number_of_aortic_sections)
 fprintf('Longitud de la centerline: %.1f mm\n', centerline_total_length_mm)
 fprintf('Separacion entre cortes: %.1f mm\n', ...
     mean(diff(section_arc_positions_mm)))
+fprintf(['Anclaje I-IV por arco fijo: I=%.1f mm (plano %d), ', ...
+    'IV=%.1f mm (plano %d), distancia I-IV=%.1f mm\n'], ...
+    section_arc_positions_mm(section_I_urbina), section_I_urbina, ...
+    section_arc_positions_mm(section_IV_urbina), section_IV_urbina, ...
+    section_arc_positions_mm(section_IV_urbina) - ...
+    section_arc_positions_mm(section_I_urbina))
 
 %----------------------- Niveles de Laplace asociados a cada corte -----------------------%
 
@@ -326,7 +361,7 @@ else
         'Revise la orientacion de la centerline.'])
 end
 
-figure('Name', 'Normal rest: malla, 30 cortes y velocidad normal')
+figure('Name', char(dataset_label + ": malla, 30 cortes y velocidad normal"))
 patch( ...
     'Faces', faces, ...
     'Vertices', nodes, ...
@@ -445,7 +480,7 @@ disp(FlowSummary)
 
 %% Graficar curvas de flujo por corte
 
-figure('Name', 'Normal rest: curvas de flujo por corte')
+figure('Name', char(dataset_label + ": curvas de flujo por corte"))
 plot(time_vector_seconds, flow_rate_mL_per_s', 'LineWidth', 1.2)
 xlabel('Tiempo [s]')
 ylabel('Flujo [mL/s]')
@@ -459,6 +494,7 @@ grid on
 %   TTP  = Time To Peak, usa el tiempo del maximo de flujo.
 %   TTF  = Time To Foot, estima el pie de onda desde la pendiente inicial.
 %   XCor = Cross-correlation global tipo Markl.
+%   Urbina/Sotelo = Cross-correlation entre posiciones I y IV.
 %
 % La distancia usada en el ajuste lineal es la posicion acumulada sobre la
 % centerline, en metros. PWV se calcula como 1/pendiente del ajuste tiempo
@@ -479,22 +515,38 @@ xcor_reference_section_index = section_I_urbina;
         flow_rate_mL_per_s, ...
         xcor_reference_section_index);
 
+[PWV_Urbina_XCor_mps, Delay_Urbina_XCor_s, fit_Urbina_XCor, ...
+    R2_Urbina_XCor, urbina_pair_delay_s, urbina_pair_distance_m, ...
+    urbina_pair_maximum_correlation] = ...
+    estimate_pwv_xcor_urbina_pair( ...
+        urbina_section_arc_positions_m(:), ...
+        time_vector_seconds, ...
+        flow_rate_mL_per_s, ...
+        section_I_urbina, ...
+        section_IV_urbina);
+
 valid_ttp_section_count = nnz(isfinite(TTP_s));
 valid_ttf_section_count = nnz(isfinite(TTF_s));
 valid_xcor_section_count = nnz(isfinite(Delay_XCor_s));
+valid_urbina_xcor_section_count = nnz(isfinite(Delay_Urbina_XCor_s));
 
 PWVSummary = table( ...
-    ["TTP"; "TTF"; "XCor"], ...
-    [PWV_TTP_mps; PWV_TTF_mps; PWV_XCor_mps], ...
-    [fit_TTP(1); fit_TTF(1); fit_XCor(1)], ...
-    [R2_TTP; R2_TTF; R2_XCor], ...
+    ["TTP"; "TTF"; "XCor"; "XCor_Urbina_I_IV"], ...
+    [PWV_TTP_mps; PWV_TTF_mps; PWV_XCor_mps; PWV_Urbina_XCor_mps], ...
+    [fit_TTP(1); fit_TTF(1); fit_XCor(1); fit_Urbina_XCor(1)], ...
+    [R2_TTP; R2_TTF; R2_XCor; R2_Urbina_XCor], ...
     [valid_ttp_section_count; ...
         valid_ttf_section_count; ...
-        valid_xcor_section_count], ...
-    repmat(number_of_aortic_sections, 3, 1), ...
+        valid_xcor_section_count; ...
+        valid_urbina_xcor_section_count], ...
+    [number_of_aortic_sections; ...
+        number_of_aortic_sections; ...
+        number_of_aortic_sections; ...
+        2], ...
     ["TTP all sections"; ...
-        "TTF baseline-corrected all sections"; ...
-        "XCor: all sections vs reference section"], ...
+        "TTF all sections: Markl 20-80% peak-flow foot"; ...
+        "XCor Markl: all sections vs reference section"; ...
+        "Urbina/Sotelo: XCor between sections I and IV"], ...
     'VariableNames', { ...
         'Method', ...
         'PWV_mps', ...
@@ -513,18 +565,24 @@ PWVPlaneSummary = table( ...
     'VariableNames', {'Plane', 's_m', 'TTP_s', 'TTF_s', 'XCor'});
 
 fprintf('\n============================================================\n')
-fprintf('RESULTADOS NORMAL REST\n')
+fprintf('RESULTADOS %s\n', upper(dataset_label))
 fprintf('============================================================\n')
 fprintf('Numero de fases temporales: %d\n', numel(time_vector_seconds))
 fprintf('Tiempo inicial: %.6f s\n', time_vector_seconds(1))
 fprintf('Tiempo final: %.6f s\n', time_vector_seconds(end))
 fprintf('dt medio: %.6f s\n', mean(diff(time_vector_seconds)))
 fprintf('\nNumero de cortes: %d\n', number_of_aortic_sections)
-fprintf('XCor %d\n', ...
+fprintf('Secciones Urbina/Sotelo I-IV: %d-%d\n', ...
+    section_I_urbina, section_IV_urbina)
+fprintf('Referencia XCor Markl global: %d\n', ...
     xcor_reference_section_index)
 fprintf(['PWV XCor global = %.4f m/s | slope = %.6f s/m | ', ...
     'R2 = %.4f | planos validos = %d\n'], ...
     PWV_XCor_mps, fit_XCor(1), R2_XCor, valid_xcor_section_count)
+fprintf(['PWV XCor Urbina/Sotelo I-IV = %.4f m/s | ', ...
+    'distancia = %.1f mm | delay = %.6f s | corr = %.4f\n'], ...
+    PWV_Urbina_XCor_mps, urbina_pair_distance_m*1000, ...
+    urbina_pair_delay_s, urbina_pair_maximum_correlation)
 fprintf('Separacion media: %.1f mm\n', mean(diff(section_arc_positions_mm)))
 fprintf('Fase visualizada: %d\n', visualization_phase_index)
 fprintf('\nResumen de PWV:\n')
@@ -691,52 +749,72 @@ function [time_vector_seconds, time_vector_source] = get_time_vector_for_pwv( ..
 end
 
 
+function [time_fine_s, flow_fine_mL_per_s, valid_curve] = ...
+    resample_flow_curve_fine( ...
+        time_vector_seconds, flow_curve_mL_per_s, number_of_fine_samples)
+
+    % Remuestrea una curva de flujo a una grilla temporal fina usando pchip
+    % (interpolacion monotona a trozos, sin overshoot). A 33 ms la subida
+    % sistolica tiene 1-2 muestras; sobre la grilla fina hay decenas de
+    % puntos, lo que permite localizar peak y pie con resolucion sub-fase y
+    % estabilizar el ajuste de la pendiente de subida.
+
+    time_vector_seconds = time_vector_seconds(:);
+    flow_curve_mL_per_s = flow_curve_mL_per_s(:);
+    valid_curve = false;
+    time_fine_s = linspace(time_vector_seconds(1), ...
+        time_vector_seconds(end), number_of_fine_samples)';
+    flow_fine_mL_per_s = nan(number_of_fine_samples, 1);
+
+    if nnz(isfinite(flow_curve_mL_per_s)) < 4
+        return
+    end
+
+    flow_curve_mL_per_s = fillmissing( ...
+        flow_curve_mL_per_s, 'linear', 'EndValues', 'nearest');
+    flow_fine_mL_per_s = interp1(time_vector_seconds, ...
+        flow_curve_mL_per_s, time_fine_s, 'pchip');
+    valid_curve = any(isfinite(flow_fine_mL_per_s)) && ...
+        (max(flow_fine_mL_per_s) - min(flow_fine_mL_per_s)) > eps;
+end
+
+
 function [PWV_mps, TTP_s, fit_coefficients, R2] = estimate_pwv_ttp( ...
     section_distance_m, time_vector_seconds, flow_rate_mL_per_s)
 
-    % Time To Peak: para cada corte identifica el tiempo del maximo de flujo.
-    % Si el maximo no esta en los extremos, ajusta una parabola local de tres
-    % puntos para refinar el instante del peak con resolucion sub-fase.
+    % Time To Peak con localizacion sub-fase del instante del maximo. La curva
+    % se remuestrea a grilla fina (pchip) y el peak se refina ajustando una
+    % parabola a una ventana alrededor del maximo; se toma el vertice.
+    %
+    % Por que NO basta el argmax de la curva fina: pchip es monotona a trozos y
+    % no hace overshoot, asi que su maximo cae siempre sobre una muestra
+    % original -> TTP quedaria cuantizada a multiplos de dt (33 ms) y el grafico
+    % muestra escalones. La parabola recupera resolucion continua entre fases.
 
     number_of_sections = size(flow_rate_mL_per_s, 1);
-    TTP_s = nan(number_of_sections, 1);
+    number_of_fine_samples = 1000;
     mean_time_step_seconds = mean(diff(time_vector_seconds));
+    TTP_s = nan(number_of_sections, 1);
 
     for section_index = 1:number_of_sections
-        section_flow_curve_mL_per_s = flow_rate_mL_per_s(section_index,:)';
+        [time_fine_s, flow_fine_mL_per_s, valid_curve] = ...
+            resample_flow_curve_fine(time_vector_seconds, ...
+            flow_rate_mL_per_s(section_index,:)', number_of_fine_samples);
 
-        if all(~isfinite(section_flow_curve_mL_per_s))
+        if ~valid_curve
             continue
         end
 
-        section_flow_curve_mL_per_s = fillmissing( ...
-            section_flow_curve_mL_per_s, 'linear', 'EndValues', 'nearest');
-        [~, peak_sample_index] = max(section_flow_curve_mL_per_s);
-        floating_peak_sample_index = peak_sample_index - 1;
+        [~, peak_fine_index] = max(flow_fine_mL_per_s);
 
-        if peak_sample_index > 1 && ...
-                peak_sample_index < numel(section_flow_curve_mL_per_s)
-
-            left_flow_value = section_flow_curve_mL_per_s(peak_sample_index-1);
-            center_flow_value = section_flow_curve_mL_per_s(peak_sample_index);
-            right_flow_value = section_flow_curve_mL_per_s(peak_sample_index+1);
-            parabola_denominator = ...
-                left_flow_value - 2*center_flow_value + right_flow_value;
-
-            if isfinite(parabola_denominator) && ...
-                    abs(parabola_denominator) > eps
-
-                peak_sample_offset = ...
-                    0.5*(left_flow_value - right_flow_value) / ...
-                    parabola_denominator;
-                peak_sample_offset = max(min(peak_sample_offset, 1), -1);
-                floating_peak_sample_index = ...
-                    peak_sample_index - 1 + peak_sample_offset;
-            end
+        % Un peak pegado a un borde no es un maximo sistolico bien definido.
+        if peak_fine_index <= 1 || peak_fine_index >= number_of_fine_samples
+            continue
         end
 
-        TTP_s(section_index) = time_vector_seconds(1) + ...
-            floating_peak_sample_index*mean_time_step_seconds;
+        TTP_s(section_index) = refine_peak_time_parabolic( ...
+            time_fine_s, flow_fine_mL_per_s, peak_fine_index, ...
+            mean_time_step_seconds);
     end
 
     [PWV_mps, fit_coefficients, R2] = fit_pwv_linear( ...
@@ -744,75 +822,155 @@ function [PWV_mps, TTP_s, fit_coefficients, R2] = estimate_pwv_ttp( ...
 end
 
 
+function peak_time_s = refine_peak_time_parabolic( ...
+    time_fine_s, flow_fine_mL_per_s, peak_fine_index, frame_step_seconds)
+
+    % Ajusta una parabola por minimos cuadrados a una ventana de +/- ~1 fase
+    % alrededor del maximo de la curva fina y devuelve el instante del vertice.
+    % Si la parabola no es concava hacia abajo o el vertice cae fuera de la
+    % ventana, retorna el tiempo del maximo muestral como respaldo.
+
+    peak_time_s = time_fine_s(peak_fine_index);
+    fine_step_seconds = time_fine_s(2) - time_fine_s(1);
+    half_window_samples = max(2, round(frame_step_seconds / fine_step_seconds));
+    window_start_index = max(1, peak_fine_index - half_window_samples);
+    window_end_index = ...
+        min(numel(time_fine_s), peak_fine_index + half_window_samples);
+    window_indices = (window_start_index:window_end_index)';
+
+    if numel(window_indices) < 3
+        return
+    end
+
+    % Se centra el tiempo en el peak muestral para condicionar bien el ajuste.
+    centered_time_s = time_fine_s(window_indices) - peak_time_s;
+    parabola_coefficients = polyfit( ...
+        centered_time_s, flow_fine_mL_per_s(window_indices), 2);
+    quadratic_term = parabola_coefficients(1);
+    linear_term = parabola_coefficients(2);
+
+    if ~isfinite(quadratic_term) || quadratic_term >= 0
+        return
+    end
+
+    vertex_offset_s = -linear_term / (2*quadratic_term);
+
+    if abs(vertex_offset_s) > (centered_time_s(end) - centered_time_s(1))
+        return
+    end
+
+    peak_time_s = peak_time_s + vertex_offset_s;
+end
+
+
 function [PWV_mps, TTF_s, fit_coefficients, R2] = estimate_pwv_ttf( ...
     section_distance_m, time_vector_seconds, flow_rate_mL_per_s)
 
-    % Time To Foot: usa el tramo ascendente entre 20% y 80% del peak de
-    % flujo. Una recta sobre ese tramo se extrapola hasta flujo cero para
-    % estimar el pie de onda.
+    % Time To Foot (foot-to-foot tipo Markl). Para cada corte:
+    %   1) remuestrea la curva a grilla fina (pchip);
+    %   2) estima un baseline diastolico (minimo pre-sistolico);
+    %   3) ajusta una recta al tramo 20-80% de la AMPLITUD sobre baseline;
+    %   4) el pie es la interseccion de esa recta con el baseline, no con
+    %      flujo cero: extrapolar a cero es una extrapolacion larga que
+    %      amplifica el error de pendiente y sesga el pie.
+    % Sobre grilla fina el tramo 20-80% tiene decenas de puntos y la
+    % pendiente es estable; sobre los 25 puntos crudos tiene 1-2 muestras y
+    % el pie sale aleatorio (pendiente negativa, R2 ~ 0).
 
     number_of_sections = size(flow_rate_mL_per_s, 1);
+    number_of_fine_samples = 1000;
     TTF_s = nan(number_of_sections, 1);
 
     for section_index = 1:number_of_sections
-        section_flow_curve_mL_per_s = flow_rate_mL_per_s(section_index,:)';
+        [time_fine_s, flow_fine_mL_per_s, valid_curve] = ...
+            resample_flow_curve_fine(time_vector_seconds, ...
+            flow_rate_mL_per_s(section_index,:)', number_of_fine_samples);
 
-        if all(~isfinite(section_flow_curve_mL_per_s))
+        if ~valid_curve
             continue
         end
 
-        section_flow_curve_mL_per_s = fillmissing( ...
-            section_flow_curve_mL_per_s, 'linear', 'EndValues', 'nearest');
-        baseline_sample_count = min(3, numel(section_flow_curve_mL_per_s));
-        baseline_flow_mL_per_s = median( ...
-            section_flow_curve_mL_per_s(1:baseline_sample_count), ...
-            'omitnan');
-        flow_relative_mL_per_s = ...
-            section_flow_curve_mL_per_s - baseline_flow_mL_per_s;
-        [peak_relative_flow_mL_per_s, peak_sample_index] = ...
-            max(flow_relative_mL_per_s);
+        [peak_flow_mL_per_s, peak_fine_index] = max(flow_fine_mL_per_s);
 
-        if peak_sample_index < 3 || ...
-                ~isfinite(peak_relative_flow_mL_per_s) || ...
-                peak_relative_flow_mL_per_s <= 0
+        if peak_fine_index < 3
             continue
         end
 
-        threshold_20_percent = 0.20 * peak_relative_flow_mL_per_s;
-        threshold_80_percent = 0.80 * peak_relative_flow_mL_per_s;
-        threshold_20_index = find( ...
-            flow_relative_mL_per_s(1:peak_sample_index) >= ...
-            threshold_20_percent, 1, 'first');
-        threshold_80_index = find( ...
-            flow_relative_mL_per_s(1:peak_sample_index) >= ...
-            threshold_80_percent, 1, 'first');
+        baseline_flow_mL_per_s = min(flow_fine_mL_per_s(1:peak_fine_index));
+        systolic_amplitude_mL_per_s = ...
+            peak_flow_mL_per_s - baseline_flow_mL_per_s;
 
-        if isempty(threshold_20_index) || ...
-                isempty(threshold_80_index) || ...
-                threshold_80_index <= threshold_20_index
+        if ~isfinite(systolic_amplitude_mL_per_s) || ...
+                systolic_amplitude_mL_per_s <= 0
             continue
         end
 
-        upslope_sample_indices = ( ...
-            max(1, threshold_20_index-1): ...
-            min(peak_sample_index, threshold_80_index+1))';
+        threshold_20 = ...
+            baseline_flow_mL_per_s + 0.20*systolic_amplitude_mL_per_s;
+        threshold_80 = ...
+            baseline_flow_mL_per_s + 0.80*systolic_amplitude_mL_per_s;
+        upslope_curve_mL_per_s = flow_fine_mL_per_s(1:peak_fine_index);
+        index_20 = find(upslope_curve_mL_per_s >= threshold_20, 1, 'first');
+        index_80 = find(upslope_curve_mL_per_s >= threshold_80, 1, 'first');
 
-        if numel(upslope_sample_indices) < 2
+        if isempty(index_20) || isempty(index_80) || index_80 <= index_20
+            continue
+        end
+
+        % Un ascenso limpio cruza el umbral del 20% una sola vez. Multiples
+        % cruces indican una subida oscilante (jet/reflexiones tras una
+        % coartacion severa): el pie no es fiable y se descarta el plano.
+        number_of_20_percent_crossings = nnz( ...
+            diff(upslope_curve_mL_per_s >= threshold_20) == 1);
+
+        if number_of_20_percent_crossings > 1
+            continue
+        end
+
+        upslope_sample_indices = (index_20:index_80)';
+
+        if numel(upslope_sample_indices) < 3
             continue
         end
 
         upslope_fit_coefficients = polyfit( ...
-            time_vector_seconds(upslope_sample_indices), ...
-            flow_relative_mL_per_s(upslope_sample_indices), ...
+            time_fine_s(upslope_sample_indices), ...
+            flow_fine_mL_per_s(upslope_sample_indices), ...
             1);
+        upslope_slope = upslope_fit_coefficients(1);
+        upslope_intercept = upslope_fit_coefficients(2);
 
-        if ~isfinite(upslope_fit_coefficients(1)) || ...
-                abs(upslope_fit_coefficients(1)) <= eps
+        if ~isfinite(upslope_slope) || upslope_slope <= eps
             continue
         end
 
-        TTF_s(section_index) = ...
-            -upslope_fit_coefficients(2) / upslope_fit_coefficients(1);
+        % El tramo 20-80% de un ascenso sistolico limpio es casi lineal. Un R2
+        % local bajo indica una onda distorsionada (planos en/tras la
+        % coartacion): el pie no es confiable y se descarta el plano.
+        fitted_upslope_mL_per_s = polyval( ...
+            upslope_fit_coefficients, time_fine_s(upslope_sample_indices));
+        upslope_residual_ss = sum(( ...
+            flow_fine_mL_per_s(upslope_sample_indices) - ...
+            fitted_upslope_mL_per_s).^2);
+        upslope_total_ss = sum(( ...
+            flow_fine_mL_per_s(upslope_sample_indices) - mean( ...
+            flow_fine_mL_per_s(upslope_sample_indices))).^2);
+        upslope_local_r2 = 1 - upslope_residual_ss / max(upslope_total_ss, eps);
+
+        if ~isfinite(upslope_local_r2) || upslope_local_r2 < 0.95
+            continue
+        end
+
+        % Pie = interseccion de la recta de subida con el baseline diastolico.
+        foot_time_s = ...
+            (baseline_flow_mL_per_s - upslope_intercept) / upslope_slope;
+
+        if foot_time_s < time_fine_s(1) || ...
+                foot_time_s > time_fine_s(peak_fine_index)
+            continue
+        end
+
+        TTF_s(section_index) = foot_time_s;
     end
 
     [PWV_mps, fit_coefficients, R2] = fit_pwv_linear( ...
@@ -1057,6 +1215,8 @@ function [PWV_mps, Delay_s, fit_coefficients, R2, ...
     end
 
     PWV_mps = pair_distance_m / pair_delay_s;
+    fit_coefficients = [pair_delay_s / pair_distance_m, ...
+        -pair_delay_s / pair_distance_m * section_distance_m(section_I)];
 
     Delay_s(section_I) = 0;
     Delay_s(section_IV) = pair_delay_s;
@@ -1066,51 +1226,104 @@ end
 function [PWV_mps, fit_coefficients, R2] = fit_pwv_linear( ...
     section_distance_m, characteristic_time_seconds)
 
-    % Ajuste lineal comun a los tres metodos de PWV. Si t = a*s + b,
-    % entonces PWV = 1/a. Se exige un minimo de tres cortes validos para
-    % evitar ajustes degenerados.
+    % Ajuste robusto de tiempo vs distancia. Si t = a*s + b, PWV = 1/a. Se
+    % rechazan planos outlier (p.ej. pies mal detectados sobre ondas
+    % distorsionadas por una coartacion severa) con robustfit; si no hay
+    % Statistics Toolbox, se usa un descarte iterativo por MAD. Sin este
+    % rechazo, unos pocos planos vuelcan la pendiente global (incluso a
+    % negativa). Sobre datos limpios (sin outliers) equivale al OLS.
+
+    PWV_mps = NaN;
+    fit_coefficients = [NaN NaN];
+    R2 = NaN;
 
     valid_sample_mask = ...
-        isfinite(section_distance_m) & isfinite(characteristic_time_seconds);
+        isfinite(section_distance_m(:)) & ...
+        isfinite(characteristic_time_seconds(:));
 
     if nnz(valid_sample_mask) < 3
-        PWV_mps = NaN;
-        fit_coefficients = [NaN NaN];
-        R2 = NaN;
         return
     end
 
     valid_section_distance_m = section_distance_m(valid_sample_mask);
+    valid_section_distance_m = valid_section_distance_m(:);
     valid_characteristic_time_seconds = ...
         characteristic_time_seconds(valid_sample_mask);
+    valid_characteristic_time_seconds = valid_characteristic_time_seconds(:);
+
+    inlier_mask = true(size(valid_section_distance_m));
+
+    if exist('robustfit', 'file') == 2
+        [~, robust_stats] = robustfit( ...
+            valid_section_distance_m, valid_characteristic_time_seconds);
+        robust_residuals = robust_stats.resid;
+        residual_scale = 1.4826*median(abs( ...
+            robust_residuals - median(robust_residuals)));
+
+        if ~isfinite(residual_scale) || residual_scale <= eps
+            residual_scale = std(robust_residuals);
+        end
+
+        if isfinite(residual_scale) && residual_scale > eps
+            inlier_mask = abs(robust_residuals) <= 3*residual_scale;
+        end
+    else
+        for iteration = 1:5
+            current_fit = polyfit( ...
+                valid_section_distance_m(inlier_mask), ...
+                valid_characteristic_time_seconds(inlier_mask), 1);
+            residuals = valid_characteristic_time_seconds - ...
+                polyval(current_fit, valid_section_distance_m);
+            residual_scale = 1.4826*median(abs( ...
+                residuals(inlier_mask) - median(residuals(inlier_mask))));
+
+            if ~isfinite(residual_scale) || residual_scale <= eps
+                break
+            end
+
+            updated_mask = abs(residuals) <= 3*residual_scale;
+
+            if nnz(updated_mask) < 3 || isequal(updated_mask, inlier_mask)
+                break
+            end
+
+            inlier_mask = updated_mask;
+        end
+    end
+
+    if nnz(inlier_mask) < 3
+        return
+    end
+
     fit_coefficients = polyfit( ...
-        valid_section_distance_m, valid_characteristic_time_seconds, 1);
+        valid_section_distance_m(inlier_mask), ...
+        valid_characteristic_time_seconds(inlier_mask), 1);
     slope_seconds_per_meter = fit_coefficients(1);
 
     if ~isfinite(slope_seconds_per_meter) || ...
             abs(slope_seconds_per_meter) <= eps
         PWV_mps = NaN;
+    elseif slope_seconds_per_meter <= 0
+        PWV_mps = NaN;
+        warning( ...
+            ['Pendiente temporal no positiva (%.6f s/m) tras ajuste ', ...
+            'robusto. PWV no fisiologica; se reporta NaN.'], ...
+            slope_seconds_per_meter)
     else
         PWV_mps = 1/slope_seconds_per_meter;
-
-        if PWV_mps < 0
-            warning( ...
-                'PWV negativa (%.6f m/s). Revise la orientacion.', ...
-                PWV_mps)
-        end
     end
 
-    fitted_time_seconds = polyval(fit_coefficients, valid_section_distance_m);
-    residual_sum_of_squares = sum( ...
-        (valid_characteristic_time_seconds - fitted_time_seconds).^2);
-    total_sum_of_squares = sum( ...
-        (valid_characteristic_time_seconds - ...
-        mean(valid_characteristic_time_seconds)).^2);
+    fitted_time_seconds = polyval( ...
+        fit_coefficients, valid_section_distance_m(inlier_mask));
+    residual_sum_of_squares = sum(( ...
+        valid_characteristic_time_seconds(inlier_mask) - ...
+        fitted_time_seconds).^2);
+    total_sum_of_squares = sum(( ...
+        valid_characteristic_time_seconds(inlier_mask) - mean( ...
+        valid_characteristic_time_seconds(inlier_mask))).^2);
 
     if total_sum_of_squares > 0
         R2 = 1 - residual_sum_of_squares/total_sum_of_squares;
-    else
-        R2 = NaN;
     end
 end
 
