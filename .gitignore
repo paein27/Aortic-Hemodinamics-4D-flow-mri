@@ -10,3 +10,7 @@
 # Include the toolbox folder and all its contents.
 !/4D-Flow-Matlab-Toolbox-main/
 !/4D-Flow-Matlab-Toolbox-main/**
+
+# Include the auxiliary functions folder.
+!/funciones/
+!/funciones/**
